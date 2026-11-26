@@ -3,6 +3,7 @@
 from pathlib import Path
 from sqlite3 import Connection
 
+from strata.preservation.capacity import UNREFERENCED
 from strata.preservation.catalog import active_holds, revision_row
 from strata.preservation.integrity import resolve
 from strata.runtime.database import Database
@@ -11,15 +12,6 @@ from strata.runtime.events import append
 from strata.runtime.media import Media, sync_directory
 from strata.transfer.deposits import collection_row
 from strata.transfer.manifest import integer, reference_id, sha256
-
-UNREFERENCED = """
-    NOT EXISTS (
-        SELECT 1 FROM revision_parts p JOIN revisions r
-        ON p.collection=r.collection AND p.number=r.number
-        WHERE p.digest=o.digest AND r.retired_at IS NULL
-    )
-    AND NOT EXISTS (SELECT 1 FROM received_parts p WHERE p.digest=o.digest)
-"""
 
 
 class Custody:

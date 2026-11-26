@@ -123,6 +123,12 @@ SCHEMA = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS events_by_collection ON events(collection,id)",
+    """
+    CREATE TABLE IF NOT EXISTS settings(
+        key TEXT PRIMARY KEY,
+        value INTEGER NOT NULL
+    )
+    """,
 )
 
 
@@ -133,12 +139,23 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.transaction() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise RuntimeError(f"Unsupported vault catalog version {version}")
             if version == 0:
                 for statement in SCHEMA:
                     connection.execute(statement)
                 connection.execute("PRAGMA user_version=1")
+                version = 1
+            if version == 1:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS settings(
+                        key TEXT PRIMARY KEY,
+                        value INTEGER NOT NULL
+                    )
+                    """
+                )
+                connection.execute("PRAGMA user_version=2")
 
     def now(self) -> int:
         return self.clock()

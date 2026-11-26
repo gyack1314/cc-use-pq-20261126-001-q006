@@ -21,6 +21,17 @@ python -m compileall -q strata
 
 `POST /collections/{collection}/deposits` 接收 `token`、`parent`、`lifetime_seconds` 及 `manifest`。清单版本为 `1`，每个文件包含 `path`、`size`、`sha256` 和按原文件顺序排列的 `parts`。分片由 `sha256` 与 `size` 描述。清单按路径排序后生成 UTF-8 JSON 指纹，文件内分片顺序参与指纹。空文件可以入库。档案最多 500 个文件、8192 个分片引用、4 GiB 逻辑字节，单片最多 16 MiB。文件路径须在不同操作系统上保持唯一，保留 `_vault` 给出库元数据。
 
+## 容量准备与入库结算
+
+接收站只有一块受限对象盘，可用 `python -m strata --capacity-bytes N` 或 `PUT /operations/capacity`（请求体 `{"capacity_bytes": N}`，传 `null` 解除限额）声明可承诺字节，限额持久化在目录中并随重启保留。开接收会话时在同一个目录事务里完成容量准备：按去重后的分片计算本会话需要追加的承诺，整单放不下就整体拒绝（HTTP 409），响应中给出 `required_bytes`、仍有效的 `committable_bytes`、`capacity_bytes`、当前 `physical_bytes` 与 `reserved_bytes`，不会留下半份不可履约的承诺。
+
+- 两个会话缺同一分片时，对应的物理空间只承诺一次；只要还有任一有效（开放且未到期）承诺依赖它，这部分字节就不会被当作余量。同一会话用原令牌重试只会回到原会话，承诺不扩大。
+- 已落盘的活对象不再重复承诺；标记待删（marked）对象在真正 `sweep` 腾空之前继续占用物理空间，当前版本、固定引用和接收会话保住的对象不会为新申请被回收。
+- 承诺随分片实际入库而结算为物理占用，提交总量保持不变。落盘与目录承认处于同一事务，即使收据丢失或进程在落盘与承认之间中断，重传同一字节也不会既占实际空间又重复扣减未来空间，更不会被算作可再分配空间。
+- 取消与到期只结束该会话自身的责任：它独有的缺片承诺立即释放，已落盘对象转入回收候选，仍被其他会话或版本引用的共享对象继续受保护。
+
+`GET /operations/capacity` 在与接收决策相同的谓词下返回容量快照：`physical_bytes`/`physical_object_count`（物理占用，含待删对象）、`reserved_bytes`/`reserved_parts`（有效承诺，按去重对象计）、`committed_bytes`（前两者之和）、`reclaimable_bytes`（已标记待删、尚未腾空）、`reclaim_candidate_bytes`（无保护引用、等待 mark 的活对象）以及 `committable_bytes`（还能对新会话承诺的字节；未配置限额时为 `null`）。
+
 逐片以 `application/octet-stream` 上送到 `PUT /deposits/{id}/parts/{digest}`。重复上传保留已有收据，共享字节只落盘一次。将 `POST /deposits/{id}/publish` 作为最后一步。系统会核对全文件摘要，并比较当前头版本与提交时依据的版本。图层两次分别基于同一头版本送审时，只有一次可以成为下一版。发布回执丢失可再次请求同一会话。取消及到期的会话保留原令牌和清单痕迹。
 
 ## 取回与维护

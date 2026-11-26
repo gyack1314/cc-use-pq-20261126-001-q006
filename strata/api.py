@@ -31,8 +31,13 @@ class HoldInput(BaseModel):
     reason: StrictStr
 
 
-def create_app(root: Path, *, clock=None) -> FastAPI:
-    vault = Vault(root, clock)
+class CapacityInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    capacity_bytes: int | None
+
+
+def create_app(root: Path, *, clock=None, capacity_bytes: int | None = None) -> FastAPI:
+    vault = Vault(root, clock, capacity_bytes=capacity_bytes)
     app = FastAPI(title="Strata Vault", version="1.0.0")
     app.add_middleware(JsonLimit)
     app.state.vault = vault
@@ -110,6 +115,14 @@ def create_app(root: Path, *, clock=None) -> FastAPI:
     @app.get("/operations/forecast")
     def capacity(limit: int = 50):
         return vault.custody.forecast(limit)
+
+    @app.get("/operations/capacity")
+    def capacity_report():
+        return vault.capacity.report()
+
+    @app.put("/operations/capacity")
+    def set_capacity(body: CapacityInput):
+        return vault.capacity.set_limit(body.capacity_bytes)
 
     @app.post("/operations/expire")
     def expire(limit: int = 100):

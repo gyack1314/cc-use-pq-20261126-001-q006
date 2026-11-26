@@ -5,6 +5,7 @@ from sqlite3 import Connection
 from typing import BinaryIO
 from uuid import uuid4
 
+from strata.preservation.capacity import Capacity
 from strata.preservation.integrity import active, report, verified
 from strata.runtime.database import Database
 from strata.runtime.errors import VaultError, conflict, invalid, missing
@@ -65,9 +66,10 @@ def summary(connection: Connection, row, now: int, *, include_manifest: bool = F
 
 
 class Deposits:
-    def __init__(self, db: Database, media: Media):
+    def __init__(self, db: Database, media: Media, capacity: Capacity):
         self.db = db
         self.media = media
+        self.capacity = capacity
 
     def open(self, collection: str, token: str, parent: int, lifetime: int, raw: object) -> dict:
         collection_id(collection)
@@ -83,24 +85,29 @@ class Deposits:
                 "SELECT * FROM deposits WHERE collection=? AND token=?", (collection, token),
             ).fetchone()
             if previous is not None:
+                # 同一会话重试只回到原承诺，绝不重新预留或扩大承诺。
                 if (previous["manifest_hash"] != fingerprint or previous["parent"] != parent
                         or previous["expires_at"] - previous["created_at"] != lifetime):
                     raise conflict("Source token was used for another deposit", token=token)
                 return summary(connection, previous, now)
             if current["head"] != parent:
                 raise conflict("Deposit parent differs from current head", current=current["head"], parent=parent)
+            parts = manifest.unique_parts()
+            # 闸门先于任何会话写入：不足时整个事务回滚，不产生半份承诺。
+            reservation = self.capacity.reservation_for(connection, parts, now)
+            self.capacity.ensure_room(connection, reservation["bytes"])
             deposit = uuid4().hex
             connection.execute(
                 """INSERT INTO deposits(id,collection,token,parent,manifest,manifest_hash,created_at,expires_at,status)
                    VALUES(?,?,?,?,?,?,?,?,'open')""",
                 (deposit, collection, token, parent, manifest.text(), fingerprint, now, now + lifetime),
             )
-            parts = manifest.unique_parts()
             connection.executemany("INSERT INTO expected_parts(deposit,digest,size) VALUES(?,?,?)",
                                    ((deposit, digest, size) for digest, size in parts.items()))
             reused = self._claim_existing(connection, deposit, parts, now)
             append(connection, collection, "deposit_opened", deposit, now,
-                   part_count=len(parts), reused_count=reused, parent=parent)
+                   part_count=len(parts), reused_count=reused, parent=parent,
+                   reserved_bytes=reservation["bytes"], reserved_parts=len(reservation["parts"]))
             return summary(connection, deposit_row(connection, deposit), now)
 
     def _claim_existing(self, connection: Connection, deposit: str, parts: dict[str, int], now: int) -> int:
